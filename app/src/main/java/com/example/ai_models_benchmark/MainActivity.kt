@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Resources
+import android.content.res.Resources.getSystem
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -17,9 +19,9 @@ import android.media.MediaPlayer
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.util.DisplayMetrics
+import android.util.Log
 import android.util.Size
 import android.view.View
 import android.widget.AdapterView
@@ -33,7 +35,6 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
-import com.example.ai_models_benchmark.tflite.Recognition
 import com.example.ai_models_benchmark.tflite.TfliteDetector
 import com.example.androidscreenstreamer.ImageStreamService
 import java.time.Duration
@@ -57,6 +58,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var fpsText: TextView
     private lateinit var inferenceText: TextView
     private lateinit var totalTimeText: TextView
+    private lateinit var infMeanText: TextView
+
     private var boxPaint: Paint = Paint()
     private var textPain: Paint = Paint()
 
@@ -77,8 +80,31 @@ class MainActivity : AppCompatActivity() {
             labelsFile = "heart_label.txt",
             inputShape = Size(640, 640),
             outputShape = intArrayOf(1,8,8400)
-        )
-
+        ),
+        AIModel(
+            name = "train 37 fp32",
+            videoExample = R.raw.a4c,
+            modelFile = "train_37_fp32.tflite",
+            labelsFile = "heart_label.txt",
+            inputShape = Size(640, 640),
+            outputShape = intArrayOf(1,8,8400)
+        ),
+        AIModel(
+            name = "train 38 fp16",
+            videoExample = R.raw.a4c,
+            modelFile = "train_38_fp16.tflite",
+            labelsFile = "heart_label.txt",
+            inputShape = Size(256, 256),
+            outputShape = intArrayOf(1,8,1344)
+        ),
+        AIModel(
+            name = "train 38 fp32",
+            videoExample = R.raw.a4c,
+            modelFile = "train_38_fp32.tflite",
+            labelsFile = "heart_label.txt",
+            inputShape = Size(256, 256),
+            outputShape = intArrayOf(1,8,1344)
+        ),
     )
 
     private var mediaProjectionManager: MediaProjectionManager? = null
@@ -93,6 +119,11 @@ class MainActivity : AppCompatActivity() {
 
     private var fps : Int = 0
     private var startDateTime: LocalDateTime = LocalDateTime.now()
+
+    private var inferenceTimeSum : Long = 0
+    private var inferenceIndex : Int = 0
+    private val inferenceSamples : Int = 200
+    private var calculatedMeanInf: Long = 0
 
     inner class MediaProjectionCallback : MediaProjection.Callback() {
         override fun onStop() {
@@ -143,6 +174,7 @@ class MainActivity : AppCompatActivity() {
         fpsText = findViewById(R.id.fps)
         inferenceText = findViewById(R.id.inference)
         totalTimeText = findViewById(R.id.totalTime)
+        infMeanText = findViewById(R.id.infMean)
     }
 
     private fun setVideoView(){
@@ -167,6 +199,8 @@ class MainActivity : AppCompatActivity() {
                 selectedModel = parent.getItemAtPosition(position) as AIModel
                 setVideoView()
                 tfliteDetector.initializeModel(applicationContext, selectedModel)
+                resetFps()
+                resetInferenceTimes()
             }
 
             override fun onNothingSelected(parent: AdapterView<*>) {
@@ -215,6 +249,24 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    fun dpToPx(dp: Int): Int {
+        return (dp / Resources.getSystem().displayMetrics.ydpi).toInt()
+    }
+
+    // Function to crop the bitmap
+    fun cropBitmapToCenter(originalBitmap: Bitmap, targetHeightDp: Int): Bitmap {
+        val targetHeightPx = dpToPx(targetHeightDp)
+
+        // Calculate the width of the ImageView proportionally
+        val aspectRatio = originalBitmap.width.toFloat() / originalBitmap.height.toFloat()
+        val targetWidthPx = (targetHeightPx * aspectRatio).toInt()
+
+        // Calculate the cropping bounds
+        val startX = (originalBitmap.width - targetWidthPx) / 2
+        val startY = (originalBitmap.height - targetHeightPx) / 2
+
+        return Bitmap.createBitmap(originalBitmap, startX, startY, targetWidthPx, targetHeightPx)
+    }
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if(requestCode == SCREEN_CAPTURE_PERMISSION_CODE){
@@ -224,6 +276,7 @@ class MainActivity : AppCompatActivity() {
             mediaProjection?.registerCallback(mMediaProjectionCallback!!, null)
             virtualDisplay = createVirtualDisplay()
             resetFps()
+            resetInferenceTimes()
             imageReader!!.setOnImageAvailableListener({ reader ->
                 val image = reader.acquireLatestImage()
                 if (image != null) {
@@ -241,13 +294,12 @@ class MainActivity : AppCompatActivity() {
                     val bitmapWidth = bitmap.width
                     val bitmapHeight = bitmap.height
 
-
                     val croppedBitmap =  Bitmap.createBitmap(
                         bitmap,
                         0,
-                        bitmapHeight/2 - 250,
+                        (bitmapHeight/2) - (imageView.height/2),
                         bitmapWidth,
-                        500,
+                        imageView.height
                     );
 
 
@@ -260,21 +312,23 @@ class MainActivity : AppCompatActivity() {
                     val canvas = Canvas(mutableBitmap)
 
                     for (recognition in detectionResult.recognitions) {
+                        Log.v("ArthurDebug", "${recognition.confidence} ${recognition.location.toString()}")
                         if (recognition.confidence > 0.4) {
                             val location: RectF = recognition.location
                             canvas.drawRect(location, boxPaint)
                             canvas.drawText(
-                                recognition.name + ":" + recognition.score,
+                                recognition.name + ":" + String.format ("%.1f",(recognition.confidence)*100) + "%",
                                 location.left,
                                 location.top,
                                 textPain
                             )
                         }
                     }
-                    totalTimeText.text = "total: ${Duration.between(startTotalTimeInference, LocalDateTime.now()).toMillis()} ms"
+
                     imageView.setImageBitmap(mutableBitmap)
 
                     image.close()
+                    calculateInference(startTotalTimeInference, detectionResult.inferenceTime.toMillis())
                     calculateFps()
                 }
             }, null)
@@ -352,5 +406,24 @@ class MainActivity : AppCompatActivity() {
         }else{
             fps++
         }
+    }
+
+    private fun resetInferenceTimes(){
+        inferenceIndex = 0
+        inferenceTimeSum = 0L
+        calculatedMeanInf = 0L
+    }
+    private fun calculateInference(startTotalTimeInference: LocalDateTime, inferenceTime: Long) {
+        val timeDiff = Duration.between(startTotalTimeInference, LocalDateTime.now()).toMillis()
+        totalTimeText.text = "total: ${timeDiff} ms"
+        inferenceTimeSum += inferenceTime
+        inferenceIndex ++
+        Log.v("ArthurDebug", "timeDiff: $inferenceTime inferenceTimeSum: $inferenceTimeSum index: $inferenceIndex")
+        if(inferenceIndex >= inferenceSamples){
+            calculatedMeanInf = inferenceTimeSum/inferenceIndex
+            inferenceIndex = 0
+            inferenceTimeSum = 0L
+        }
+        infMeanText.text = "${inferenceIndex}/${inferenceSamples}: ${selectedModel.name} ${calculatedMeanInf}"
     }
 }

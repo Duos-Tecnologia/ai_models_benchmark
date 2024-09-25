@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.RectF
+import android.util.Log
 import com.example.ai_models_benchmark.AIModel
 import com.example.ai_models_benchmark.DetectionResult
 import org.tensorflow.lite.DataType
@@ -59,13 +60,8 @@ public class TfliteDetector() {
 
         var tensorInput: TensorImage = TensorImage(DataType.FLOAT32)
 
-        if(model.higherOutputTensor == model.outputShape[1]) {
-            tensorInput.load(bitmap)
-        }
-        else{
-            tensorInput.load(heartBitmap)
+        tensorInput.load(bitmap)
 
-        }
         tensorInput = imageProcessor.process(tensorInput)
 
         val probabilityBuffer: TensorBuffer = TensorBuffer.createFixedSize(model.outputShape, DataType.FLOAT32)
@@ -75,10 +71,10 @@ public class TfliteDetector() {
         val inferenceTime = Duration.between(timeBeforeInference, LocalDateTime.now())
 
         val recognitionArray = probabilityBuffer.floatArray
-
+        Log.v("ArthurDebug", "val 1 ${recognitionArray[4*755]} ${tensorInput}")
         val allRecognitions = ArrayList<Recognition>()
 
-        //if(model.higherOutputTensor == model.outputShape[1]){
+        if(model.higherOutputTensor == model.outputShape[1]){
             for (i in 0 until model.higherOutputTensor) {
                 val gridStride: Int = i * model.lowOutputTensor
                 val confidence = recognitionArray[4 + gridStride]
@@ -121,96 +117,74 @@ public class TfliteDetector() {
                 }
 
             }
-      //  }else {
+        }else {
+            // Obtenha detalhes da saída
+            val outputTensor = interpreter.getOutputTensor(0)
+            val outputShape = outputTensor.shape() // Exemplo: [1, atributos, detecções]
+            val numAttributes = outputShape[1]
+            val numDetections = outputShape[2]
 
-//            for (i in 0 until model.higherOutputTensor) {
-//                val confidence = recognitionArray[4 + (i * model.lowOutputTensor)]
-//                if (confidence > 0.6) {
-//                    val x: Float = recognitionArray[0 + (i * model.lowOutputTensor)] * bitmap.width
-//                    val y: Float = recognitionArray[1 + (i * model.lowOutputTensor)] * bitmap.height
-//                    val w: Float = recognitionArray[2 + (i * model.lowOutputTensor)] * bitmap.width
-//                    val h: Float = recognitionArray[3 + (i * model.lowOutputTensor)] * bitmap.height
-//                    val xmin = max(0.0, x - w / 2.0).toInt()
-//                    val ymin = max(0.0, y - h / 2.0).toInt()
-//                    val xmax = min(bitmap.width.toDouble(), x + w / 2.0).toInt()
-//                    val ymax = min(bitmap.height.toDouble(), y + h / 2.0).toInt()
-//
-//                    val classScores = Arrays.copyOfRange(
-//                        recognitionArray,
-//                        5 + (i * model.lowOutputTensor),
-//                        model.lowOutputTensor + (i * model.lowOutputTensor)
-//                    )
-//
-//                    var labelId = 0
-//                    var maxLabelScores = 0f
-//                    for (j in classScores.indices) {
-//                        if (classScores[j] > maxLabelScores) {
-//                            maxLabelScores = classScores[j]
-//                            labelId = j
-//                        }
-//                    }
-//
-//
-//                    val r = Recognition(
-//                        labelId,
-//                        "",
-//                        maxLabelScores,
-//                        confidence,
-//                        RectF(xmin.toFloat(), ymin.toFloat(), xmax.toFloat(), ymax.toFloat())
-//                    )
-//                    if(r.labelId ==2){
-//
-//                        allRecognitions.add(
-//                            r
-//                        )
-//                    }
-//                }
-//            }
-       // }
+            val outputData = Array(numAttributes) { FloatArray(numDetections) }
+            var index = 0
+            for (i in 0 until numAttributes) {
+                for (j in 0 until numDetections) {
 
+                    outputData[i][j] = recognitionArray[index++]
+                    if(i == 4 && j == 755){
+                        Log.v("ArthurDebug", "val ${outputData[i][j]} ${recognitionArray[4*755]}")
+                    }
+                }
+            }
 
-//        for (i in 0 until model.outputShape[1]) {
-//            val gridStride: Int = i * model.outputShape[2]
-//            // 由于yolov5作者在导出tflite的时候对输出除以了image size, 所以这里需要乘回去
-//            val x: Float = recognitionArray[0 + gridStride] * bitmap.width
-//            val y: Float = recognitionArray[1 + gridStride] * bitmap.height
-//            val w: Float = recognitionArray[2 + gridStride] * bitmap.width
-//            val h: Float = recognitionArray[3 + gridStride] * bitmap.height
-//            val xmin = max(0.0, x - w / 2.0).toInt()
-//            val ymin = max(0.0, y - h / 2.0).toInt()
-//            val xmax = min(bitmap.width.toDouble(), x + w / 2.0).toInt()
-//            val ymax = min(bitmap.height.toDouble(), y + h / 2.0).toInt()
-//            val confidence = recognitionArray[4 + gridStride]
-//            val classScores = Arrays.copyOfRange(
-//                recognitionArray,
-//                5 + gridStride,
-//                model.outputShape[2] + gridStride
-//            )
-//            //            if(i % 1000 == 0){
-////                Log.i("tfliteSupport","x,y,w,h,conf:"+x+","+y+","+w+","+h+","+confidence);
-////            }
-//            var labelId = 0
-//            var maxLabelScores = 0f
-//            for (j in classScores.indices) {
-//                if (classScores[j] > maxLabelScores) {
-//                    maxLabelScores = classScores[j]
-//                    labelId = j
-//                }
-//            }
-//
-//
-//            val r = Recognition(
-//                labelId,
-//                "",
-//                maxLabelScores,
-//                confidence,
-//                RectF(xmin.toFloat(), ymin.toFloat(), xmax.toFloat(), ymax.toFloat())
-//            )
-//            allRecognitions.add(
-//                r
-//            )
-//        }
+            val numClasses = numAttributes - 5 // Supondo que os 5 primeiros são x, y, w, h, confiança
 
+            for (i in 0 until numDetections) {
+                val confidence = outputData[4][i]
+                if (confidence > DETECT_THRESHOLD) {
+                    val x = outputData[0][i] * bitmap.width
+                    val y = outputData[1][i] * bitmap.height
+                    val w = outputData[2][i] * bitmap.width
+                    val h = outputData[3][i] * bitmap.height
+
+                    val xmin = max(0.0f, x - w / 2.0f)
+                    val ymin = max(0.0f, y - h / 2.0f)
+                    val xmax = min(bitmap.width.toFloat(), x + w / 2.0f)
+                    val ymax = min(bitmap.height.toFloat(), y + h / 2.0f)
+
+                    // Obter pontuações das classes
+                    val classScores = FloatArray(numClasses)
+                    for (c in 0 until numClasses) {
+                        classScores[c] = outputData[5 + c][i]
+                    }
+
+                    // Identificar a classe com maior pontuação
+                    var labelId = 0
+                    var maxLabelScore = 0f
+                    for (j in classScores.indices) {
+                        if (classScores[j] > maxLabelScore) {
+                            maxLabelScore = classScores[j]
+                            labelId = j
+                        }
+                    }
+                    val recognition = Recognition(
+                        labelId,
+                        labels[labelId],
+                        maxLabelScore,
+                        confidence,
+                        RectF(xmin, ymin, xmax, ymax)
+                    )
+                    Log.v("ArthurDebug", "local new rec ${maxLabelScore} ${confidence}")
+                    allRecognitions.add(recognition)
+                }
+            }
+
+        }
+
+        Log.v("ArthurDebug", "local new")
+        allRecognitions.forEach {
+            Log.v("ArthurDebug", "local ${it.confidence} ${it.score} ${it.name}")
+
+        }
         val nmsRecognitions:ArrayList<Recognition> = nms(allRecognitions)
 
         // 第二次非极大抑制, 过滤那些同个目标识别到2个以上目标边框为不同类别的
