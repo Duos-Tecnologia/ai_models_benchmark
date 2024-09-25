@@ -23,8 +23,7 @@ import java.util.PriorityQueue
 import kotlin.math.max
 import kotlin.math.min
 
-
-public class TfliteDetector() {
+class TfliteDetector {
     private val DETECT_THRESHOLD = 0.25f
     private val IOU_CLASS_DUPLICATED_THRESHOLD = 0.7f
     private val IOU_THRESHOLD = 0.45f
@@ -35,16 +34,16 @@ public class TfliteDetector() {
 
     private lateinit var heartBitmap: Bitmap
 
-    fun initializeModel(activity: Context, initModel: AIModel){
-        val bitmap: InputStream =  activity.assets.open("heart.png")
-        heartBitmap=BitmapFactory.decodeStream(bitmap);
+    fun initializeModel(activity: Context, initModel: AIModel) {
+        val bitmap: InputStream = activity.assets.open("heart.png")
+        heartBitmap = BitmapFactory.decodeStream(bitmap)
 
         model = initModel
 
         val tfliteModel: ByteBuffer = FileUtil.loadMappedFile(activity, model.modelFile)
 
-        val options: Interpreter.Options = Interpreter.Options()
-        //options.addDelegate(NnApiDelegate())
+        val options = Interpreter.Options()
+        // options.addDelegate(NnApiDelegate())
 
         interpreter = Interpreter(tfliteModel, options)
         labels = FileUtil.loadLabels(activity, model.labelsFile)
@@ -53,22 +52,23 @@ public class TfliteDetector() {
     fun detect(bitmap: Bitmap): DetectionResult {
         val inputHeight = model.inputShape.height
         val inputWidth = model.inputShape.width
-        val imageProcessor: ImageProcessor = ImageProcessor.Builder()
+        val imageProcessor = ImageProcessor.Builder()
             .add(ResizeOp(inputHeight, inputWidth, ResizeOp.ResizeMethod.BILINEAR))
-            .add(NormalizeOp(0F, 255F)).build()
+            .add(NormalizeOp(0F, 255F)) // Normaliza para 0-1
+            .build()
 
-        var tensorInput: TensorImage = TensorImage(DataType.FLOAT32)
+        var tensorInput = TensorImage(DataType.FLOAT32)
 
-        if(model.higherOutputTensor == model.outputShape[1]) {
-            tensorInput.load(bitmap)
-        }
-        else{
-            tensorInput.load(heartBitmap)
-
-        }
+        tensorInput.load(bitmap)
         tensorInput = imageProcessor.process(tensorInput)
 
-        val probabilityBuffer: TensorBuffer = TensorBuffer.createFixedSize(model.outputShape, DataType.FLOAT32)
+        // Obtenha detalhes da saída
+        val outputTensor = interpreter.getOutputTensor(0)
+        val outputShape = outputTensor.shape() // Exemplo: [1, atributos, detecções]
+        val numAttributes = outputShape[1]
+        val numDetections = outputShape[2]
+
+        val probabilityBuffer = TensorBuffer.createFixedSize(outputShape, DataType.FLOAT32)
 
         val timeBeforeInference = LocalDateTime.now()
         interpreter.run(tensorInput.buffer, probabilityBuffer.buffer)
@@ -76,198 +76,95 @@ public class TfliteDetector() {
 
         val recognitionArray = probabilityBuffer.floatArray
 
+        // Remodelar o array unidimensional em um array 2D
+        val outputData = Array(numAttributes) { FloatArray(numDetections) }
+        var index = 0
+        for (i in 0 until numAttributes) {
+            for (j in 0 until numDetections) {
+                outputData[i][j] = recognitionArray[index++]
+            }
+        }
+
         val allRecognitions = ArrayList<Recognition>()
 
-        //if(model.higherOutputTensor == model.outputShape[1]){
-            for (i in 0 until model.higherOutputTensor) {
-                val gridStride: Int = i * model.lowOutputTensor
-                val confidence = recognitionArray[4 + gridStride]
-                if(confidence > 0.6){
-                    val x: Float = recognitionArray[0 + gridStride] * bitmap.width
-                    val y: Float = recognitionArray[1 + gridStride] * bitmap.height
-                    val w: Float = recognitionArray[2 + gridStride] * bitmap.width
-                    val h: Float = recognitionArray[3 + gridStride] * bitmap.height
-                    val xmin = max(0.0, x - w / 2.0).toInt()
-                    val ymin = max(0.0, y - h / 2.0).toInt()
-                    val xmax = min(bitmap.width.toDouble(), x + w / 2.0).toInt()
-                    val ymax = min(bitmap.height.toDouble(), y + h / 2.0).toInt()
+        val numClasses = numAttributes - 5 // Supondo que os 5 primeiros são x, y, w, h, confiança
 
-                    val classScores = Arrays.copyOfRange(
-                        recognitionArray,
-                        5 + gridStride,
-                        model.lowOutputTensor + gridStride
-                    )
+        for (i in 0 until numDetections) {
+            val confidence = outputData[4][i]
+            if (confidence > DETECT_THRESHOLD) {
+                val x = outputData[0][i] * bitmap.width
+                val y = outputData[1][i] * bitmap.height
+                val w = outputData[2][i] * bitmap.width
+                val h = outputData[3][i] * bitmap.height
 
-                    var labelId = 0
-                    var maxLabelScores = 0f
-                    for (j in classScores.indices) {
-                        if (classScores[j] > maxLabelScores) {
-                            maxLabelScores = classScores[j]
-                            labelId = j
-                        }
-                    }
+                val xmin = max(0.0f, x - w / 2.0f)
+                val ymin = max(0.0f, y - h / 2.0f)
+                val xmax = min(bitmap.width.toFloat(), x + w / 2.0f)
+                val ymax = min(bitmap.height.toFloat(), y + h / 2.0f)
 
-
-                    val r = Recognition(
-                        labelId,
-                        "",
-                        maxLabelScores,
-                        confidence,
-                        RectF(xmin.toFloat(), ymin.toFloat(), xmax.toFloat(), ymax.toFloat())
-                    )
-                    allRecognitions.add(
-                        r
-                    )
+                // Obter pontuações das classes
+                val classScores = FloatArray(numClasses)
+                for (c in 0 until numClasses) {
+                    classScores[c] = outputData[5 + c][i]
                 }
 
+                // Identificar a classe com maior pontuação
+                var labelId = 0
+                var maxLabelScore = 0f
+                for (j in classScores.indices) {
+                    if (classScores[j] > maxLabelScore) {
+                        maxLabelScore = classScores[j]
+                        labelId = j
+                    }
+                }
+
+                val recognition = Recognition(
+                    labelId,
+                    labels[labelId],
+                    maxLabelScore,
+                    confidence,
+                    RectF(xmin, ymin, xmax, ymax)
+                )
+                allRecognitions.add(recognition)
             }
-      //  }else {
-
-//            for (i in 0 until model.higherOutputTensor) {
-//                val confidence = recognitionArray[4 + (i * model.lowOutputTensor)]
-//                if (confidence > 0.6) {
-//                    val x: Float = recognitionArray[0 + (i * model.lowOutputTensor)] * bitmap.width
-//                    val y: Float = recognitionArray[1 + (i * model.lowOutputTensor)] * bitmap.height
-//                    val w: Float = recognitionArray[2 + (i * model.lowOutputTensor)] * bitmap.width
-//                    val h: Float = recognitionArray[3 + (i * model.lowOutputTensor)] * bitmap.height
-//                    val xmin = max(0.0, x - w / 2.0).toInt()
-//                    val ymin = max(0.0, y - h / 2.0).toInt()
-//                    val xmax = min(bitmap.width.toDouble(), x + w / 2.0).toInt()
-//                    val ymax = min(bitmap.height.toDouble(), y + h / 2.0).toInt()
-//
-//                    val classScores = Arrays.copyOfRange(
-//                        recognitionArray,
-//                        5 + (i * model.lowOutputTensor),
-//                        model.lowOutputTensor + (i * model.lowOutputTensor)
-//                    )
-//
-//                    var labelId = 0
-//                    var maxLabelScores = 0f
-//                    for (j in classScores.indices) {
-//                        if (classScores[j] > maxLabelScores) {
-//                            maxLabelScores = classScores[j]
-//                            labelId = j
-//                        }
-//                    }
-//
-//
-//                    val r = Recognition(
-//                        labelId,
-//                        "",
-//                        maxLabelScores,
-//                        confidence,
-//                        RectF(xmin.toFloat(), ymin.toFloat(), xmax.toFloat(), ymax.toFloat())
-//                    )
-//                    if(r.labelId ==2){
-//
-//                        allRecognitions.add(
-//                            r
-//                        )
-//                    }
-//                }
-//            }
-       // }
-
-
-//        for (i in 0 until model.outputShape[1]) {
-//            val gridStride: Int = i * model.outputShape[2]
-//            // 由于yolov5作者在导出tflite的时候对输出除以了image size, 所以这里需要乘回去
-//            val x: Float = recognitionArray[0 + gridStride] * bitmap.width
-//            val y: Float = recognitionArray[1 + gridStride] * bitmap.height
-//            val w: Float = recognitionArray[2 + gridStride] * bitmap.width
-//            val h: Float = recognitionArray[3 + gridStride] * bitmap.height
-//            val xmin = max(0.0, x - w / 2.0).toInt()
-//            val ymin = max(0.0, y - h / 2.0).toInt()
-//            val xmax = min(bitmap.width.toDouble(), x + w / 2.0).toInt()
-//            val ymax = min(bitmap.height.toDouble(), y + h / 2.0).toInt()
-//            val confidence = recognitionArray[4 + gridStride]
-//            val classScores = Arrays.copyOfRange(
-//                recognitionArray,
-//                5 + gridStride,
-//                model.outputShape[2] + gridStride
-//            )
-//            //            if(i % 1000 == 0){
-////                Log.i("tfliteSupport","x,y,w,h,conf:"+x+","+y+","+w+","+h+","+confidence);
-////            }
-//            var labelId = 0
-//            var maxLabelScores = 0f
-//            for (j in classScores.indices) {
-//                if (classScores[j] > maxLabelScores) {
-//                    maxLabelScores = classScores[j]
-//                    labelId = j
-//                }
-//            }
-//
-//
-//            val r = Recognition(
-//                labelId,
-//                "",
-//                maxLabelScores,
-//                confidence,
-//                RectF(xmin.toFloat(), ymin.toFloat(), xmax.toFloat(), ymax.toFloat())
-//            )
-//            allRecognitions.add(
-//                r
-//            )
-//        }
-
-        val nmsRecognitions:ArrayList<Recognition> = nms(allRecognitions)
-
-        // 第二次非极大抑制, 过滤那些同个目标识别到2个以上目标边框为不同类别的
-        val nmsFilterBoxDuplicationRecognitions: java.util.ArrayList<Recognition> =
-            nmsAllClass(nmsRecognitions)
-
-
-        // 更新label信息
-        for (recognition in nmsFilterBoxDuplicationRecognitions) {
-            val labelId: Int = recognition.labelId
-            val labelName: String = labels[labelId]
-            recognition.name = labelName
         }
-        return DetectionResult(inferenceTime,nmsFilterBoxDuplicationRecognitions)
+
+        val nmsRecognitions = nms(allRecognitions)
+        val finalRecognitions = nmsAllClass(nmsRecognitions)
+
+        return DetectionResult(inferenceTime, finalRecognitions)
     }
 
-    private fun nms(allRecognitions: java.util.ArrayList<Recognition>): java.util.ArrayList<Recognition> {
-        val nmsRecognitions = java.util.ArrayList<Recognition>()
+    private fun nms(allRecognitions: ArrayList<Recognition>): ArrayList<Recognition> {
+        val nmsRecognitions = ArrayList<Recognition>()
 
-        // 遍历每个类别, 在每个类别下做nms
-        for (i in 0 until model.lowOutputTensor - 5) {
-            // 这里为每个类别做一个队列, 把labelScore高的排前面
-            val pq =
-                PriorityQueue<Recognition>(
-                    model.higherOutputTensor,
-                    object : Comparator<Recognition?> {
-                        override fun compare(l: Recognition?, r: Recognition?): Int {
-                            if(l == null || r == null){
-                                return  -1
-                            }
-                            // Intentionally reversed to put high confidence at the head of the queue.
-                            return r.confidence.compareTo(l.confidence)
-                        }
-                    })
+        val numClasses = labels.size
 
-            // 相同类别的过滤出来, 且obj要大于设定的阈值
-            for (j in allRecognitions.indices) {
-//                if (allRecognitions.get(j).getLabelId() == i) {
-                if (allRecognitions[j].labelId == i && allRecognitions[j].confidence > DETECT_THRESHOLD) {
-                    pq.add(allRecognitions[j])
-                    //                    Log.i("tfliteSupport", allRecognitions.get(j).toString());
+        // Para cada classe
+        for (i in 0 until numClasses) {
+            val pq = PriorityQueue<Recognition>(
+                Comparator { l, r ->
+                    r.confidence.compareTo(l.confidence)
+                }
+            )
+
+            // Filtrar reconhecimentos da mesma classe
+            for (rec in allRecognitions) {
+                if (rec.labelId == i && rec.confidence > DETECT_THRESHOLD) {
+                    pq.add(rec)
                 }
             }
 
-            // nms循环遍历
-            while (pq.size > 0) {
-                // 概率最大的先拿出来
-                val a = arrayOfNulls<Recognition>(pq.size)
-                val detections: Array<Recognition> = pq.toArray(a)
-                val max = detections[0]
+            // Aplicar NMS
+            while (pq.isNotEmpty()) {
+                val max = pq.poll()
                 nmsRecognitions.add(max)
-                pq.clear()
 
-                for (k in 1 until detections.size) {
-                    val detection = detections[k]
-                    if (boxIou(max.location, detection.location) < IOU_THRESHOLD) {
-                        pq.add(detection)
+                val iterator = pq.iterator()
+                while (iterator.hasNext()) {
+                    val detection = iterator.next()
+                    if (boxIou(max.location, detection.location) > IOU_THRESHOLD) {
+                        iterator.remove()
                     }
                 }
             }
@@ -275,76 +172,60 @@ public class TfliteDetector() {
         return nmsRecognitions
     }
 
-    private fun nmsAllClass(allRecognitions: java.util.ArrayList<Recognition>): java.util.ArrayList<Recognition> {
-        val nmsRecognitions = java.util.ArrayList<Recognition>()
+    private fun nmsAllClass(allRecognitions: ArrayList<Recognition>): ArrayList<Recognition> {
+        val nmsRecognitions = ArrayList<Recognition>()
 
-        val pq =
-            PriorityQueue<Recognition>(
-                100,
-                object : Comparator<Recognition?> {
-                    override fun compare(l: Recognition?, r: Recognition?): Int {
-                        if(l == null || r == null){
-                            return  -1
-                        }
-                        // Intentionally reversed to put high confidence at the head of the queue.
-                        return r.confidence.compareTo(l.confidence)
-                    }
-                })
+        val pq = PriorityQueue<Recognition>(
+            Comparator { l, r ->
+                r.confidence.compareTo(l.confidence)
+            }
+        )
 
-        // 相同类别的过滤出来, 且obj要大于设定的阈值
-        for (j in allRecognitions.indices) {
-            if (allRecognitions[j].confidence > DETECT_THRESHOLD) {
-                pq.add(allRecognitions[j])
+        // Adicionar todos os reconhecimentos acima do limiar
+        for (rec in allRecognitions) {
+            if (rec.confidence > DETECT_THRESHOLD) {
+                pq.add(rec)
             }
         }
 
-        while (pq.size > 0) {
-            // 概率最大的先拿出来
-            val a = arrayOfNulls<Recognition>(pq.size)
-            val detections: Array<Recognition> = pq.toArray(a)
-            val max = detections[0]
+        // Aplicar NMS entre classes
+        while (pq.isNotEmpty()) {
+            val max = pq.poll()
             nmsRecognitions.add(max)
-            pq.clear()
 
-            for (k in 1 until detections.size) {
-                val detection = detections[k]
-                if (boxIou(
-                        max.location,
-                        detection.location
-                    ) < IOU_CLASS_DUPLICATED_THRESHOLD
-                ) {
-                    pq.add(detection)
+            val iterator = pq.iterator()
+            while (iterator.hasNext()) {
+                val detection = iterator.next()
+                if (boxIou(max.location, detection.location) > IOU_CLASS_DUPLICATED_THRESHOLD) {
+                    iterator.remove()
                 }
             }
         }
         return nmsRecognitions
     }
 
-
-    protected fun boxIou(a: RectF, b: RectF): Float {
+    private fun boxIou(a: RectF, b: RectF): Float {
         val intersection = boxIntersection(a, b)
         val union = boxUnion(a, b)
-        if (union <= 0) return 1F
+        if (union <= 0) return 0f
         return intersection / union
     }
 
-    protected fun boxIntersection(a: RectF, b: RectF): Float {
-        val maxLeft = if (a.left > b.left) a.left else b.left
-        val maxTop = if (a.top > b.top) a.top else b.top
-        val minRight = if (a.right < b.right) a.right else b.right
-        val minBottom = if (a.bottom < b.bottom) a.bottom else b.bottom
+    private fun boxIntersection(a: RectF, b: RectF): Float {
+        val maxLeft = max(a.left, b.left)
+        val maxTop = max(a.top, b.top)
+        val minRight = min(a.right, b.right)
+        val minBottom = min(a.bottom, b.bottom)
         val w = minRight - maxLeft
         val h = minBottom - maxTop
 
-        if (w < 0 || h < 0) return 0F
-        val area = w * h
-        return area
+        if (w < 0 || h < 0) return 0f
+        return w * h
     }
 
-    protected fun boxUnion(a: RectF, b: RectF): Float {
+    private fun boxUnion(a: RectF, b: RectF): Float {
         val i = boxIntersection(a, b)
-        val u =
-            (a.right - a.left) * (a.bottom - a.top) + (b.right - b.left) * (b.bottom - b.top) - i
+        val u = (a.width() * a.height()) + (b.width() * b.height()) - i
         return u
     }
 }
