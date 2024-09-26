@@ -37,6 +37,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.example.ai_models_benchmark.tflite.TfliteDetector
 import com.example.androidscreenstreamer.ImageStreamService
+import org.tensorflow.lite.support.metadata.MetadataExtractor
 import java.time.Duration
 import java.time.LocalDateTime
 
@@ -71,7 +72,8 @@ class MainActivity : AppCompatActivity() {
             modelFile = "yolov5s-fp16.tflite",
             labelsFile = "coco_label.txt",
             inputShape = Size(320, 320),
-            outputShape = intArrayOf(1,6300,85)
+            outputShape = intArrayOf(1,6300,85),
+            isInt8 = false,
             ),
         AIModel(
             name = "train 37 fp16",
@@ -79,7 +81,8 @@ class MainActivity : AppCompatActivity() {
             modelFile = "train_37_fp16.tflite",
             labelsFile = "heart_label.txt",
             inputShape = Size(640, 640),
-            outputShape = intArrayOf(1,8,8400)
+            outputShape = intArrayOf(1,8,8400),
+            isInt8 = false,
         ),
         AIModel(
             name = "train 37 fp32",
@@ -87,7 +90,8 @@ class MainActivity : AppCompatActivity() {
             modelFile = "train_37_fp32.tflite",
             labelsFile = "heart_label.txt",
             inputShape = Size(640, 640),
-            outputShape = intArrayOf(1,8,8400)
+            outputShape = intArrayOf(1,8,8400),
+            isInt8 = false,
         ),
         AIModel(
             name = "train 38 fp16",
@@ -95,7 +99,8 @@ class MainActivity : AppCompatActivity() {
             modelFile = "train_38_fp16.tflite",
             labelsFile = "heart_label.txt",
             inputShape = Size(256, 256),
-            outputShape = intArrayOf(1,8,1344)
+            outputShape = intArrayOf(1,8,1344),
+            isInt8 = false,
         ),
         AIModel(
             name = "train 38 fp32",
@@ -103,7 +108,19 @@ class MainActivity : AppCompatActivity() {
             modelFile = "train_38_fp32.tflite",
             labelsFile = "heart_label.txt",
             inputShape = Size(256, 256),
-            outputShape = intArrayOf(1,8,1344)
+            outputShape = intArrayOf(1,8,1344),
+            isInt8 = false,
+        ),
+        AIModel(
+            name = "train 38 int8",
+            videoExample = R.raw.a4c,
+            modelFile = "train_38_fp8.tflite",
+            labelsFile = "heart_label.txt",
+            inputShape = Size(256, 256),
+            outputShape = intArrayOf(1,8,1344),
+            isInt8 = true,
+            inputQuantParams = MetadataExtractor.QuantizationParams(0.003921568859368563f, 128),
+            outputQuantParams = MetadataExtractor.QuantizationParams(0.006008731201291084f, 123),
         ),
     )
 
@@ -312,7 +329,6 @@ class MainActivity : AppCompatActivity() {
                     val canvas = Canvas(mutableBitmap)
 
                     for (recognition in detectionResult.recognitions) {
-                        Log.v("ArthurDebug", "${recognition.confidence} ${recognition.location.toString()}")
                         if (recognition.confidence > 0.4) {
                             val location: RectF = recognition.location
                             canvas.drawRect(location, boxPaint)
@@ -418,7 +434,6 @@ class MainActivity : AppCompatActivity() {
         totalTimeText.text = "total: ${timeDiff} ms"
         inferenceTimeSum += inferenceTime
         inferenceIndex ++
-        Log.v("ArthurDebug", "timeDiff: $inferenceTime inferenceTimeSum: $inferenceTimeSum index: $inferenceIndex")
         if(inferenceIndex >= inferenceSamples){
             calculatedMeanInf = inferenceTimeSum/inferenceIndex
             inferenceIndex = 0

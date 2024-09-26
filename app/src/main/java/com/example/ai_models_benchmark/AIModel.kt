@@ -1,6 +1,7 @@
 package com.example.ai_models_benchmark
 
 import android.util.Size
+import org.tensorflow.lite.support.metadata.MetadataExtractor
 
 class AIModel(
     val name: String,
@@ -9,6 +10,9 @@ class AIModel(
     val labelsFile: String,
     val inputShape: Size,
     val outputShape: IntArray,
+    val isInt8: Boolean,
+    val inputQuantParams: MetadataExtractor.QuantizationParams? = null,
+    val outputQuantParams: MetadataExtractor.QuantizationParams? = null,
 ) {
     override fun toString(): String {
         return this.name // What to display in the Spinner list.
